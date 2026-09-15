@@ -98,11 +98,11 @@ docs/                                   ERD, use case diagram, role-permission m
 
 ## Documentation
 
-- [`docs/ERD_and_UseCase.md`](docs/ERD_and_UseCase.md) — entity relationship and use case diagrams
-- [`docs/role_permission_matrix.md`](docs/role_permission_matrix.md) — the full role/action matrix
-- [`docs/workflow_diagram.md`](docs/workflow_diagram.md) — the approval state machine
-- [`docs/business_rules.md`](docs/business_rules.md) — all ten business rules and where each is enforced
-- [`docs/test_plan.md`](docs/test_plan.md) — functional test cases and results
+- [`ERD_and_UseCase.md`](ERD_and_UseCase.md) — entity relationship and use case diagrams
+- [`role_permission_matrix.md`](role_permission_matrix.md) — the full role/action matrix
+- [`workflow_diagram.md`](workflow_diagram.md) — the approval state machine
+- [`business_rules.md`](business_rules.md) — all ten business rules and where each is enforced
+- [`test_plan.md`](test_plan.md) — functional test cases and results
 
 ## Course context
 
