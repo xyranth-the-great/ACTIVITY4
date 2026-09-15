@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Borrowing Requests · Lab Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="main" id="main-content">
+      <div class="page-head">
+        <div>
+          <h1 id="page-title">Borrowing Requests</h1>
+          <p id="subtitle">The full approval workflow, start to finish.</p>
+        </div>
+        <div class="flex gap-8">
+          <select class="filter" id="status-filter">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="released">Released</option>
+            <option value="overdue">Overdue</option>
+            <option value="returned">Returned</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-body tight">
+          <table>
+            <thead>
+              <tr id="thead-row"></tr>
+            </thead>
+            <tbody id="req-tbody">
+              <tr><td class="empty-state" colspan="7">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Process return modal -->
+  <div class="modal-backdrop" id="return-modal-backdrop">
+    <div class="modal">
+      <h2>Process return</h2>
+      <p>Record the equipment's condition. Damaged items go to Maintenance instead of Available.</p>
+      <form id="return-form">
+        <div class="field">
+          <label for="r-condition">Condition on return</label>
+          <select id="r-condition">
+            <option value="good">Good — equipment becomes Available</option>
+            <option value="damaged">Damaged — equipment needs Maintenance</option>
+          </select>
+        </div>
+        <div class="field"><label>Notes (optional)</label><textarea id="r-notes"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="return-cancel">Cancel</button>
+          <button type="submit" class="btn">Record return</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module">
+    import { supabase } from "./js/supabaseClient.js";
+    import { requireAuth } from "./js/auth.js";
+    import { renderSidebar } from "./js/nav.js";
+    import { badge, fmtDateTime, toast, errorMessage, confirmModal, promptModal } from "./js/ui.js";
+
+    const user = await requireAuth();
+    if (!user) throw new Error("redirecting");
+    const { profile } = user;
+    const isAdmin = profile.role === "admin";
+    const isStaff = profile.role === "staff";
+    const isRequester = profile.role === "requester";
+
+    renderSidebar("requests", profile);
+    document.getElementById("subtitle").textContent = isRequester
+      ? "Your submitted requests and their current status."
+      : "Review, release, and return equipment across the workflow.";
+    if (isRequester) document.getElementById("page-title").textContent = "My Requests";
+
+    const thead = document.getElementById("thead-row");
+    thead.innerHTML = `
+      <th>Equipment</th>
+      <th>Requester</th>
+      <th>Status</th>
+      <th>Requested</th>
+      <th>Purpose</th>
+      <th>Notes</th>
+      <th></th>
+    `;
+    if (isRequester) thead.children[1].remove(); // no "Requester" column needed for your own list
+
+    let allRows = [];
+
+    function noteFor(r) {
+      if (r.status === "rejected" && r.rejection_reason) return `Reason: ${r.rejection_reason}`;
+      if (r.status === "released" && r.due_at) return `Due ${fmtDateTime(r.due_at)}`;
+      if ((r.status === "returned" || r.status === "closed") && r.return_condition) return `Returned ${r.return_condition}${r.return_notes ? " — " + r.return_notes : ""}`;
+      return "—";
+    }
+
+    function rowActions(r) {
+      const actions = [];
+      if (isAdmin && r.status === "pending") {
+        actions.push(`<button class="btn btn-sm" data-act="approve" data-id="${r.id}">Approve</button>`);
+        actions.push(`<button class="btn btn-secondary btn-sm" data-act="reject" data-id="${r.id}">Reject</button>`);
+      }
+      if ((isAdmin || isStaff) && r.status === "approved") {
+        actions.push(`<button class="btn btn-sm" data-act="release" data-id="${r.id}">Release</button>`);
+      }
+      if ((isAdmin || isStaff) && (r.status === "released" || r.status === "overdue")) {
+        actions.push(`<button class="btn btn-sm" data-act="return" data-id="${r.id}">Process return</button>`);
+      }
+      if (isAdmin && r.status === "returned") {
+        actions.push(`<button class="btn btn-secondary btn-sm" data-act="close" data-id="${r.id}">Close</button>`);
+      }
+      return actions.join(" ") || `<span class="text-faint">—</span>`;
+    }
+
+    function render() {
+      const statusFilter = document.getElementById("status-filter").value;
+      const tbody = document.getElementById("req-tbody");
+      let rows = allRows;
+      if (statusFilter) rows = rows.filter(r => r.status === statusFilter);
+
+      const colCount = isRequester ? 6 : 7;
+      tbody.innerHTML = rows.length ? rows.map(r => `
+        <tr>
+          <td>${r.equipment?.name ?? "—"} <span class="cell-mono">${r.equipment?.code ?? ""}</span></td>
+          ${isRequester ? "" : `<td>${r.requester?.full_name ?? "—"}</td>`}
+          <td>${badge(r.status)}</td>
+          <td class="cell-muted cell-mono">${fmtDateTime(r.requested_at)}</td>
+          <td class="cell-muted">${r.purpose}</td>
+          <td class="cell-muted">${noteFor(r)}</td>
+          <td class="row-actions">${rowActions(r)}</td>
+        </tr>
+      `).join("") : `<tr><td class="empty-state" colspan="${colCount}">No requests match.</td></tr>`;
+    }
+
+    async function load() {
+      const { data, error } = await supabase
+        .from("borrowing_requests")
+        .select(`
+          id, status, purpose, requested_at, due_at, rejection_reason,
+          return_condition, return_notes,
+          equipment:equipment_id ( name, code ),
+          requester:requester_id ( full_name, email )
+        `)
+        .order("requested_at", { ascending: false });
+
+      if (error) {
+        document.getElementById("req-tbody").innerHTML = `<tr><td class="empty-state" colspan="7">${errorMessage(error)}</td></tr>`;
+        return;
+      }
+      allRows = data;
+      render();
+    }
+
+    document.getElementById("status-filter").addEventListener("change", render);
+
+    document.getElementById("req-tbody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const id = btn.dataset.id;
+
+      if (act === "approve") {
+        const ok = await confirmModal({ title: "Approve this request?", body: "The requester will be able to have the equipment released to them.", confirmLabel: "Approve" });
+        if (!ok) return;
+        const { error } = await supabase.rpc("review_request", { p_request_id: id, p_decision: "approved" });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Request approved.", "success");
+        load();
+      }
+
+      if (act === "reject") {
+        const reason = await promptModal({ title: "Reject this request?", body: "Optionally, give a reason the requester will see.", placeholder: "Reason (optional)", confirmLabel: "Reject" });
+        if (reason === null) return;
+        const { error } = await supabase.rpc("review_request", { p_request_id: id, p_decision: "rejected", p_reason: reason || null });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Request rejected.", "success");
+        load();
+      }
+
+      if (act === "release") {
+        const ok = await confirmModal({ title: "Release equipment?", body: "Marks the equipment as Borrowed and starts a 7-day due period.", confirmLabel: "Release" });
+        if (!ok) return;
+        const { error } = await supabase.rpc("release_request", { p_request_id: id });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Equipment released.", "success");
+        load();
+      }
+
+      if (act === "return") {
+        returnBackdrop.classList.add("show");
+        document.getElementById("return-form").dataset.requestId = id;
+      }
+
+      if (act === "close") {
+        const ok = await confirmModal({ title: "Close this transaction?", body: "This marks the borrowing record as fully closed.", confirmLabel: "Close" });
+        if (!ok) return;
+        const { error } = await supabase.rpc("close_request", { p_request_id: id });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Transaction closed.", "success");
+        load();
+      }
+    });
+
+    // Process-return modal
+    const returnBackdrop = document.getElementById("return-modal-backdrop");
+    document.getElementById("return-cancel").addEventListener("click", () => returnBackdrop.classList.remove("show"));
+    returnBackdrop.addEventListener("click", (e) => { if (e.target === returnBackdrop) returnBackdrop.classList.remove("show"); });
+
+    document.getElementById("return-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = e.target.dataset.requestId;
+      const condition = document.getElementById("r-condition").value;
+      const notes = document.getElementById("r-notes").value.trim();
+
+      const { error } = await supabase.rpc("return_request", { p_request_id: id, p_condition: condition, p_notes: notes || null });
+      if (error) return toast(errorMessage(error), "error");
+      toast("Return recorded.", "success");
+      returnBackdrop.classList.remove("show");
+      e.target.reset();
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>

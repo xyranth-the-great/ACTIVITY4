@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Equipment · Lab Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="main" id="main-content">
+      <div class="page-head">
+        <div>
+          <h1>Equipment</h1>
+          <p id="subtitle">Lab inventory and availability.</p>
+        </div>
+        <div class="flex gap-8">
+          <input class="search" id="search" placeholder="Search name or code…" />
+          <select class="filter" id="status-filter">
+            <option value="">All statuses</option>
+            <option value="available">Available</option>
+            <option value="borrowed">Borrowed</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="damaged">Damaged</option>
+            <option value="retired">Retired</option>
+          </select>
+          <button class="btn btn-sm hidden" id="add-btn" style="width:auto;">+ Add equipment</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-body tight">
+          <table>
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Name</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="eq-tbody">
+              <tr><td class="empty-state" colspan="6">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Add equipment modal -->
+  <div class="modal-backdrop" id="add-modal-backdrop">
+    <div class="modal">
+      <h2>Add equipment</h2>
+      <p>Creates a new item with status Available.</p>
+      <form id="add-form">
+        <div class="field"><label>Asset code</label><input type="text" id="f-code" required placeholder="e.g. LAP-003" /></div>
+        <div class="field"><label>Name</label><input type="text" id="f-name" required /></div>
+        <div class="field"><label>Category</label><input type="text" id="f-category" placeholder="e.g. Computing" /></div>
+        <div class="field"><label>Description</label><textarea id="f-description"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="add-cancel">Cancel</button>
+          <button type="submit" class="btn">Add equipment</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Borrow request modal -->
+  <div class="modal-backdrop" id="borrow-modal-backdrop">
+    <div class="modal">
+      <h2>Request to borrow</h2>
+      <p id="borrow-target"></p>
+      <form id="borrow-form">
+        <div class="field"><label>Purpose</label><textarea id="f-purpose" required placeholder="What will you use it for?"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="borrow-cancel">Cancel</button>
+          <button type="submit" class="btn">Submit request</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module">
+    import { supabase } from "./js/supabaseClient.js";
+    import { requireAuth } from "./js/auth.js";
+    import { renderSidebar } from "./js/nav.js";
+    import { badge, fmtDateTime, toast, errorMessage, confirmModal } from "./js/ui.js";
+
+    const user = await requireAuth();
+    if (!user) throw new Error("redirecting");
+    const { profile } = user;
+    const canManage = profile.role === "admin" || profile.role === "staff";
+
+    renderSidebar("equipment", profile);
+    if (canManage) document.getElementById("add-btn").classList.remove("hidden");
+
+    let allRows = [];
+
+    function rowActions(eq) {
+      const actions = [];
+      if (profile.role === "requester" && eq.status === "available") {
+        actions.push(`<button class="btn btn-sm" data-act="borrow" data-id="${eq.id}" data-name="${eq.name}" data-code="${eq.code}">Request</button>`);
+      }
+      if (canManage) {
+        if (eq.status === "available") {
+          actions.push(`<button class="btn btn-secondary btn-sm" data-act="maintenance" data-id="${eq.id}">Send to maintenance</button>`);
+        }
+        if (eq.status === "maintenance" && profile.role === "admin") {
+          actions.push(`<button class="btn btn-secondary btn-sm" data-act="available" data-id="${eq.id}">Mark available</button>`);
+        }
+      }
+      return actions.join(" ");
+    }
+
+    function render() {
+      const q = document.getElementById("search").value.trim().toLowerCase();
+      const statusFilter = document.getElementById("status-filter").value;
+      const tbody = document.getElementById("eq-tbody");
+
+      let rows = allRows;
+      if (statusFilter) rows = rows.filter(r => r.status === statusFilter);
+      if (q) rows = rows.filter(r => r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q));
+
+      tbody.innerHTML = rows.length ? rows.map(eq => `
+        <tr>
+          <td class="cell-mono">${eq.code}</td>
+          <td>${eq.name}</td>
+          <td class="cell-muted">${eq.category ?? "—"}</td>
+          <td>${badge(eq.status)}</td>
+          <td class="cell-muted cell-mono">${fmtDateTime(eq.updated_at)}</td>
+          <td class="row-actions">${rowActions(eq)}</td>
+        </tr>
+      `).join("") : `<tr><td class="empty-state" colspan="6">No equipment matches.</td></tr>`;
+    }
+
+    async function load() {
+      const { data, error } = await supabase
+        .from("equipment")
+        .select("*")
+        .order("code", { ascending: true });
+      if (error) {
+        document.getElementById("eq-tbody").innerHTML = `<tr><td class="empty-state" colspan="6">${errorMessage(error)}</td></tr>`;
+        return;
+      }
+      allRows = data;
+      render();
+    }
+
+    document.getElementById("search").addEventListener("input", render);
+    document.getElementById("status-filter").addEventListener("change", render);
+
+    // Row action delegation
+    document.getElementById("eq-tbody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const id = btn.dataset.id;
+
+      if (act === "borrow") {
+        document.getElementById("borrow-target").textContent = `${btn.dataset.name} · ${btn.dataset.code}`;
+        document.getElementById("borrow-form").dataset.equipmentId = id;
+        document.getElementById("borrow-modal-backdrop").classList.add("show");
+      }
+
+      if (act === "maintenance") {
+        const ok = await confirmModal({
+          title: "Send to maintenance?",
+          body: "This equipment will be unavailable for borrowing until an Administrator marks it available again.",
+          confirmLabel: "Send to maintenance",
+        });
+        if (!ok) return;
+        const { error } = await supabase.rpc("set_equipment_maintenance", { p_equipment_id: id });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Equipment sent to maintenance.", "success");
+        load();
+      }
+
+      if (act === "available") {
+        const { error } = await supabase.rpc("set_equipment_available", { p_equipment_id: id });
+        if (error) return toast(errorMessage(error), "error");
+        toast("Equipment marked available.", "success");
+        load();
+      }
+    });
+
+    // Add equipment modal
+    const addBackdrop = document.getElementById("add-modal-backdrop");
+    document.getElementById("add-btn")?.addEventListener("click", () => addBackdrop.classList.add("show"));
+    document.getElementById("add-cancel").addEventListener("click", () => addBackdrop.classList.remove("show"));
+    addBackdrop.addEventListener("click", (e) => { if (e.target === addBackdrop) addBackdrop.classList.remove("show"); });
+
+    document.getElementById("add-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const code = document.getElementById("f-code").value.trim();
+      const name = document.getElementById("f-name").value.trim();
+      const category = document.getElementById("f-category").value.trim();
+      const description = document.getElementById("f-description").value.trim();
+
+      const { error } = await supabase.rpc("admin_add_equipment", {
+        p_code: code, p_name: name, p_category: category || null, p_description: description || null,
+      });
+      if (error) return toast(errorMessage(error), "error");
+      toast("Equipment added.", "success");
+      addBackdrop.classList.remove("show");
+      e.target.reset();
+      load();
+    });
+
+    // Borrow modal
+    const borrowBackdrop = document.getElementById("borrow-modal-backdrop");
+    document.getElementById("borrow-cancel").addEventListener("click", () => borrowBackdrop.classList.remove("show"));
+    borrowBackdrop.addEventListener("click", (e) => { if (e.target === borrowBackdrop) borrowBackdrop.classList.remove("show"); });
+
+    document.getElementById("borrow-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const equipmentId = e.target.dataset.equipmentId;
+      const purpose = document.getElementById("f-purpose").value.trim();
+
+      const { error } = await supabase.rpc("submit_borrow_request", {
+        p_equipment_id: equipmentId, p_purpose: purpose,
+      });
+      if (error) return toast(errorMessage(error), "error");
+      toast("Request submitted. Awaiting Administrator review.", "success");
+      borrowBackdrop.classList.remove("show");
+      e.target.reset();
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>

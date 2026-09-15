@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Audit Log · Lab Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="main" id="main-content">
+      <div id="guard-content" class="hidden">
+        <div class="page-head">
+          <div>
+            <h1>Audit Log</h1>
+            <p>Every sensitive action, in order. Administrator only, append-only.</p>
+          </div>
+          <div class="flex gap-8">
+            <select class="filter" id="action-filter">
+              <option value="">All actions</option>
+            </select>
+            <select class="filter" id="module-filter">
+              <option value="">All modules</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-body tight">
+            <table>
+              <thead>
+                <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Module</th><th>Record</th><th>Description</th></tr>
+              </thead>
+              <tbody id="audit-tbody">
+                <tr><td class="empty-state" colspan="6">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module">
+    import { supabase } from "./js/supabaseClient.js";
+    import { requireAuth } from "./js/auth.js";
+    import { renderSidebar } from "./js/nav.js";
+    import { fmtDateTime, errorMessage } from "./js/ui.js";
+
+    // TC-A4-01 pattern applied here too: non-admin never sees log data,
+    // both because the page redirects them and because RLS (audit_select)
+    // refuses the query outright at the database level either way.
+    const user = await requireAuth(["admin"]);
+    if (!user) throw new Error("redirecting");
+    const { profile } = user;
+
+    renderSidebar("audit", profile);
+    document.getElementById("guard-content").classList.remove("hidden");
+
+    let allRows = [];
+
+    function render() {
+      const actionFilter = document.getElementById("action-filter").value;
+      const moduleFilter = document.getElementById("module-filter").value;
+      let rows = allRows;
+      if (actionFilter) rows = rows.filter(r => r.action === actionFilter);
+      if (moduleFilter) rows = rows.filter(r => r.module === moduleFilter);
+
+      const tbody = document.getElementById("audit-tbody");
+      tbody.innerHTML = rows.length ? rows.map(l => `
+        <tr>
+          <td class="cell-mono">${fmtDateTime(l.created_at)}</td>
+          <td>${l.profiles?.full_name ?? "System"}</td>
+          <td class="cell-mono">${l.action}</td>
+          <td class="cell-muted">${l.module}</td>
+          <td class="cell-mono">${l.record_id ?? "—"}</td>
+          <td class="cell-muted">${l.description ?? ""}</td>
+        </tr>
+      `).join("") : `<tr><td class="empty-state" colspan="6">No log entries match.</td></tr>`;
+    }
+
+    function populateFilters(rows) {
+      const actions = [...new Set(rows.map(r => r.action))].sort();
+      const modules = [...new Set(rows.map(r => r.module))].sort();
+      const actionSel = document.getElementById("action-filter");
+      const moduleSel = document.getElementById("module-filter");
+      actions.forEach(a => actionSel.insertAdjacentHTML("beforeend", `<option value="${a}">${a}</option>`));
+      modules.forEach(m => moduleSel.insertAdjacentHTML("beforeend", `<option value="${m}">${m}</option>`));
+    }
+
+    async function load() {
+      const { data, error } = await supabase
+        .from("audit_logs")
+        .select("id, created_at, action, module, record_id, description, profiles:user_id(full_name)")
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (error) {
+        document.getElementById("audit-tbody").innerHTML = `<tr><td class="empty-state" colspan="6">${errorMessage(error)}</td></tr>`;
+        return;
+      }
+      allRows = data;
+      populateFilters(data);
+      render();
+    }
+
+    document.getElementById("action-filter").addEventListener("change", render);
+    document.getElementById("module-filter").addEventListener("change", render);
+
+    load();
+  </script>
+</body>
+</html>

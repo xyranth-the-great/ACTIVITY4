@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Users · Lab Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="main" id="main-content">
+      <div id="guard-content" class="hidden">
+        <div class="page-head">
+          <div>
+            <h1>Users</h1>
+            <p>Manage accounts and role assignments. Administrator only.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-body tight">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th>Change role</th></tr>
+              </thead>
+              <tbody id="users-tbody">
+                <tr><td class="empty-state" colspan="5">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module">
+    import { supabase } from "./js/supabaseClient.js";
+    import { requireAuth } from "./js/auth.js";
+    import { renderSidebar } from "./js/nav.js";
+    import { badge, fmtDate, toast, errorMessage, confirmModal } from "./js/ui.js";
+
+    // TC-A4-01: only Administrator may open this page — a Viewer/Staff
+    // is redirected before any data loads.
+    const user = await requireAuth(["admin"]);
+    if (!user) throw new Error("redirecting");
+    const { profile } = user;
+
+    renderSidebar("users", profile);
+    document.getElementById("guard-content").classList.remove("hidden");
+
+    const ROLES = ["requester", "staff", "admin"];
+
+    function render(rows) {
+      const tbody = document.getElementById("users-tbody");
+      tbody.innerHTML = rows.length ? rows.map(u => `
+        <tr>
+          <td>${u.full_name}</td>
+          <td class="cell-muted">${u.email}</td>
+          <td>${badge(u.role, "role")}</td>
+          <td class="cell-muted cell-mono">${fmtDate(u.created_at)}</td>
+          <td>
+            <select class="filter role-select" data-id="${u.id}" ${u.id === profile.id ? "disabled" : ""}>
+              ${ROLES.map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}
+            </select>
+          </td>
+        </tr>
+      `).join("") : `<tr><td class="empty-state" colspan="5">No users found.</td></tr>`;
+    }
+
+    async function load() {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, role, created_at")
+        .order("created_at", { ascending: true });
+      if (error) {
+        document.getElementById("users-tbody").innerHTML = `<tr><td class="empty-state" colspan="5">${errorMessage(error)}</td></tr>`;
+        return;
+      }
+      render(data);
+    }
+
+    document.getElementById("users-tbody").addEventListener("change", async (e) => {
+      const sel = e.target.closest("select.role-select");
+      if (!sel) return;
+      const id = sel.dataset.id;
+      const newRole = sel.value;
+
+      const ok = await confirmModal({
+        title: "Change this user's role?",
+        body: `Their permitted functions will change immediately to match "${newRole}".`,
+        confirmLabel: "Change role",
+      });
+      if (!ok) { load(); return; }
+
+      const { error } = await supabase.rpc("admin_set_user_role", { p_user_id: id, p_role: newRole });
+      if (error) { toast(errorMessage(error), "error"); load(); return; }
+      toast("Role updated.", "success");
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>

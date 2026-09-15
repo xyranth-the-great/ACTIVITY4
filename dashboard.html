@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overview · Lab Asset Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar"></nav>
+    <main class="main" id="main-content">
+      <div class="page-head">
+        <div>
+          <h1 id="greeting">Overview</h1>
+          <p id="subtitle">Loading…</p>
+        </div>
+      </div>
+
+      <div class="form-error" id="denied-banner" style="display:none;">
+        You don't have access to that page for your current role.
+      </div>
+
+      <div class="stat-grid" id="stat-grid"></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2 id="recent-title">Recent activity</h2>
+        </div>
+        <div class="panel-body tight">
+          <table>
+            <thead id="recent-thead"></thead>
+            <tbody id="recent-tbody">
+              <tr><td class="empty-state" colspan="5">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module">
+    import { supabase } from "./js/supabaseClient.js";
+    import { requireAuth } from "./js/auth.js";
+    import { renderSidebar } from "./js/nav.js";
+    import { badge, fmtDateTime, errorMessage } from "./js/ui.js";
+
+    const user = await requireAuth();
+    if (!user) throw new Error("redirecting");
+    const { profile } = user;
+
+    renderSidebar("dashboard", profile);
+
+    document.getElementById("greeting").textContent = `Welcome, ${profile.full_name.split(" ")[0]}`;
+    document.getElementById("subtitle").textContent =
+      profile.role === "admin" ? "System-wide overview and pending approvals."
+      : profile.role === "staff" ? "Equipment status and release/return queue."
+      : "Your borrowing requests and available equipment.";
+
+    if (new URLSearchParams(window.location.search).get("denied")) {
+      document.getElementById("denied-banner").style.display = "block";
+    }
+
+    async function loadStats() {
+      const statGrid = document.getElementById("stat-grid");
+      const cards = [];
+
+      if (profile.role === "admin" || profile.role === "staff") {
+        const [{ count: pending }, { count: released }, { count: available }, { count: maintenance }] = await Promise.all([
+          supabase.from("borrowing_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
+          supabase.from("borrowing_requests").select("id", { count: "exact", head: true }).in("status", ["released", "overdue"]),
+          supabase.from("equipment").select("id", { count: "exact", head: true }).eq("status", "available"),
+          supabase.from("equipment").select("id", { count: "exact", head: true }).eq("status", "maintenance"),
+        ]);
+        cards.push(
+          { value: pending ?? 0, label: "Pending requests", color: "var(--pending)" },
+          { value: released ?? 0, label: "Out on loan", color: "var(--released)" },
+          { value: available ?? 0, label: "Available equipment", color: "var(--approved)" },
+          { value: maintenance ?? 0, label: "Under maintenance", color: "var(--maintenance)" },
+        );
+      } else {
+        const [{ count: mine }, { count: pendingMine }, { count: availableEq }] = await Promise.all([
+          supabase.from("borrowing_requests").select("id", { count: "exact", head: true }).eq("requester_id", profile.id),
+          supabase.from("borrowing_requests").select("id", { count: "exact", head: true }).eq("requester_id", profile.id).eq("status", "pending"),
+          supabase.from("equipment").select("id", { count: "exact", head: true }).eq("status", "available"),
+        ]);
+        cards.push(
+          { value: mine ?? 0, label: "Your total requests", color: "var(--accent)" },
+          { value: pendingMine ?? 0, label: "Awaiting review", color: "var(--pending)" },
+          { value: availableEq ?? 0, label: "Available equipment", color: "var(--approved)" },
+        );
+      }
+
+      statGrid.innerHTML = cards.map(c => `
+        <div class="stat-card" style="border-top-color:${c.color}">
+          <div class="stat-value">${c.value}</div>
+          <div class="stat-label">${c.label}</div>
+        </div>
+      `).join("");
+    }
+
+    async function loadRecent() {
+      const thead = document.getElementById("recent-thead");
+      const tbody = document.getElementById("recent-tbody");
+
+      if (profile.role === "admin") {
+        document.getElementById("recent-title").textContent = "Recent audit activity";
+        thead.innerHTML = `<tr><th>Timestamp</th><th>User</th><th>Action</th><th>Module</th><th>Description</th></tr>`;
+        const { data, error } = await supabase
+          .from("audit_logs")
+          .select("created_at, action, module, description, profiles:user_id(full_name)")
+          .order("created_at", { ascending: false })
+          .limit(8);
+        if (error) { tbody.innerHTML = `<tr><td class="empty-state" colspan="5">${errorMessage(error)}</td></tr>`; return; }
+        tbody.innerHTML = data.length ? data.map(l => `
+          <tr>
+            <td class="cell-mono">${fmtDateTime(l.created_at)}</td>
+            <td>${l.profiles?.full_name ?? "—"}</td>
+            <td>${l.action}</td>
+            <td class="cell-muted">${l.module}</td>
+            <td class="cell-muted">${l.description ?? ""}</td>
+          </tr>`).join("") : `<tr><td class="empty-state" colspan="5">No activity yet.</td></tr>`;
+      } else {
+        document.getElementById("recent-title").textContent =
+          profile.role === "staff" ? "Requests needing action" : "Your recent requests";
+        thead.innerHTML = `<tr><th>Equipment</th><th>Status</th><th>Requested</th><th>Purpose</th></tr>`;
+
+        let query = supabase
+          .from("borrowing_requests")
+          .select("id, status, requested_at, purpose, equipment:equipment_id(name, code)")
+          .order("requested_at", { ascending: false })
+          .limit(8);
+
+        if (profile.role === "staff") {
+          query = query.in("status", ["approved", "released", "overdue"]);
+        } else {
+          query = query.eq("requester_id", profile.id);
+        }
+
+        const { data, error } = await query;
+        if (error) { tbody.innerHTML = `<tr><td class="empty-state" colspan="4">${errorMessage(error)}</td></tr>`; return; }
+        tbody.innerHTML = data.length ? data.map(r => `
+          <tr>
+            <td>${r.equipment?.name ?? "—"} <span class="cell-mono">${r.equipment?.code ?? ""}</span></td>
+            <td>${badge(r.status)}</td>
+            <td class="cell-muted">${fmtDateTime(r.requested_at)}</td>
+            <td class="cell-muted">${r.purpose}</td>
+          </tr>`).join("") : `<tr><td class="empty-state" colspan="4">Nothing here yet.</td></tr>`;
+      }
+    }
+
+    loadStats();
+    loadRecent();
+  </script>
+</body>
+</html>
